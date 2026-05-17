@@ -41,15 +41,15 @@ echo -e "${BOLD}  ── Configuration CloneDNS ──${NC}"
 echo -e "${CYAN}  (Appuyez sur Entrée pour garder la valeur par défaut)${NC}"
 echo ""
 
-read -p "  Port DNS UDP [défaut: 2253] : " DNS_PORT
-DNS_PORT=${DNS_PORT:-2253}
+read -p "  Port DNS UDP [défaut: 5301] : " DNS_PORT
+DNS_PORT=${DNS_PORT:-5301}
 
 echo ""
 echo -e "${YELLOW}  Ports SSH disponibles sur ce serveur :${NC}"
 ss -tulnp | grep tcp | grep -v '127.0.0.1' | awk '{print "  →", $5}' 2>/dev/null
 echo ""
-read -p "  Port SSH backend [défaut: 143] : " SSH_PORT
-SSH_PORT=${SSH_PORT:-143}
+read -p "  Port SSH backend [défaut: 2253] : " SSH_PORT
+SSH_PORT=${SSH_PORT:-2253}
 
 echo ""
 DETECTED_NS=$(grep -oP '(?<=\s)(ns[\w.-]+)' /etc/systemd/system/server-sldns.service 2>/dev/null | head -1)
@@ -90,7 +90,7 @@ fi
 
 echo ""
 echo -e "${YELLOW}  Nettoyage des anciens services CloneDNS...${NC}"
-EXISTING=$(systemctl list-units --full --all 2>/dev/null | grep 'server-cldns-' | awk '{print $1}')
+EXISTING=$(systemctl list-units --full --all 2>/dev/null | grep 'server-cldns' | awk '{print $1}')
 if [ -n "$EXISTING" ]; then
   for SVC in $EXISTING; do
     systemctl stop "$SVC" &>/dev/null
@@ -173,4 +173,7 @@ echo "    systemctl stop server-cldns-${DNS_PORT}"
 echo ""
 echo -e "  ${YELLOW}▶ Empêcher le démarrage automatique au boot :${NC}"
 echo "    systemctl disable server-cldns-${DNS_PORT}"
+echo ""
+echo -e "  ${YELLOW}▶ Mettre à jour le système du serveur :${NC}"
+echo "    apt update && apt upgrade -y && apt autoremove -y && apt autoclean -y && apt clean"
 echo ""
