@@ -22,7 +22,7 @@ echo "  ╚═══════════════════════
 echo -e "${NC}"
 
 # ════════════════════════════════════════════════
-# DÉTECTION UNIVERSELLE SILENCIEUSE
+# SCAN UNIVERSEL SILENCIEUX
 # ════════════════════════════════════════════════
 
 SLDNS=""
@@ -31,7 +31,7 @@ PUB=""
 DETECTED_NS=""
 DETECTED_SSH_PORT=""
 
-# ── Chercher le binaire DNS ───────────────────────
+# ── 1. Chercher le binaire DNS ────────────────────
 BINARY_NAMES=("sldns-server" "dns-server" "slowdns" "sldns")
 BINARY_PATHS=(
   "/etc/slowdns"
@@ -54,6 +54,7 @@ for BIN in "${BINARY_NAMES[@]}"; do
   done
 done
 
+# Recherche globale si pas trouvé
 if [ -z "$SLDNS" ]; then
   for BIN in "${BINARY_NAMES[@]}"; do
     FOUND=$(find / -name "$BIN" -type f -executable 2>/dev/null | head -1)
@@ -64,7 +65,7 @@ if [ -z "$SLDNS" ]; then
   done
 fi
 
-# ── Chercher server.key ───────────────────────────
+# ── 2. Chercher server.key ────────────────────────
 KEY_PATHS=(
   "/etc/slowdns/server.key"
   "/usr/local/etc/server.key"
@@ -86,7 +87,7 @@ if [ -z "$KEY" ]; then
   [ -z "$KEY" ] && KEY=$(find / -name "server.key" -type f 2>/dev/null | head -1)
 fi
 
-# ── Chercher server.pub ───────────────────────────
+# ── 3. Chercher server.pub ────────────────────────
 PUB_PATHS=(
   "/etc/slowdns/server.pub"
   "/usr/local/etc/server.pub"
@@ -108,60 +109,112 @@ if [ -z "$PUB" ]; then
   [ -z "$PUB" ] && PUB=$(find / -name "server.pub" -type f 2>/dev/null | head -1)
 fi
 
-# ── Détecter Nameserver ───────────────────────────
+# ── 4. Détecter Nameserver ────────────────────────
+
+# Depuis fichiers dédiés
 NS_FILES=(
   "/etc/adm-lite/slow/dnsi/domain_ns"
   "/etc/slowdns/domain_ns"
   "/opt/slowdns/domain_ns"
 )
-
 for NSF in "${NS_FILES[@]}"; do
   if [ -f "$NSF" ]; then
-    DETECTED_NS=$(cat "$NSF" 2>/dev/null | tr -d '[:space:]')
-    [ -n "$DETECTED_NS" ] && break
+    NS_TRY=$(cat "$NSF" 2>/dev/null | tr -d '[:space:]')
+    if [ -n "$NS_TRY" ] && echo "$NS_TRY" | grep -qP '^ns[\w.-]+\.[a-z]{2,}$'; then
+      DETECTED_NS="$NS_TRY"
+      break
+    fi
   fi
 done
 
+# Depuis fichiers service systemd
 if [ -z "$DETECTED_NS" ]; then
-  for SVC_FILE in /etc/systemd/system/server-sldns*.service /etc/systemd/system/*slow*.service /etc/systemd/system/*dns*.service; do
+  for SVC_FILE in /etc/systemd/system/server-sldns*.service \
+                  /etc/systemd/system/*slow*.service \
+                  /etc/systemd/system/*dns*.service; do
     if [ -f "$SVC_FILE" ]; then
-      DETECTED_NS=$(grep -oP 'ns[\w.-]+\.[a-z]{2,}' "$SVC_FILE" 2>/dev/null | head -1)
-      [ -n "$DETECTED_NS" ] && break
+      NS_TRY=$(grep -oP 'ns[\w.-]+\.[a-z]{2,}' "$SVC_FILE" 2>/dev/null \
+               | grep -v 'nss-lookup' \
+               | grep -v 'nss-' \
+               | head -1)
+      if [ -n "$NS_TRY" ]; then
+        DETECTED_NS="$NS_TRY"
+        break
+      fi
     fi
   done
 fi
 
+# Depuis les process actifs en mémoire
 if [ -z "$DETECTED_NS" ]; then
-  DETECTED_NS=$(ps aux 2>/dev/null | grep -oP 'ns[\w.-]+\.[a-z]{2,}' | grep -v grep | head -1)
+  DETECTED_NS=$(ps aux 2>/dev/null \
+    | grep -oP 'ns[\w.-]+\.[a-z]{2,}' \
+    | grep -v 'nss-lookup' \
+    | grep -v 'nss-' \
+    | grep -v grep \
+    | head -1)
 fi
 
-# ── Détecter Port SSH SlowDNS ─────────────────────
+# Depuis ExecStart des services systemd (méthode directe)
+if [ -z "$DETECTED_NS" ]; then
+  DETECTED_NS=$(grep -rh "ExecStart" /etc/systemd/system/ 2>/dev/null \
+    | grep -i "dns\|slow\|sldns" \
+    | grep -oP 'ns[\w.-]+\.[a-z]{2,}' \
+    | grep -v 'nss-lookup' \
+    | grep -v 'nss-' \
+    | head -1)
+fi
+
+# ── 5. Détecter Port SSH SlowDNS ──────────────────
+
+# Depuis fichiers dédiés
 SSH_PORT_FILES=(
   "/etc/adm-lite/slow/dnsi/puerto"
   "/etc/slowdns/puerto"
+  "/opt/slowdns/puerto"
 )
-
 for SPF in "${SSH_PORT_FILES[@]}"; do
   if [ -f "$SPF" ]; then
-    DETECTED_SSH_PORT=$(cat "$SPF" 2>/dev/null | tr -d '[:space:]')
-    [ -n "$DETECTED_SSH_PORT" ] && break
+    SP_TRY=$(cat "$SPF" 2>/dev/null | tr -d '[:space:]')
+    if echo "$SP_TRY" | grep -qP '^\d+$'; then
+      DETECTED_SSH_PORT="$SP_TRY"
+      break
+    fi
   fi
 done
 
+# Depuis fichiers service systemd
 if [ -z "$DETECTED_SSH_PORT" ]; then
-  for SVC_FILE in /etc/systemd/system/server-sldns*.service /etc/systemd/system/*slow*.service; do
+  for SVC_FILE in /etc/systemd/system/server-sldns*.service \
+                  /etc/systemd/system/*slow*.service; do
     if [ -f "$SVC_FILE" ]; then
-      DETECTED_SSH_PORT=$(grep -oP '127\.0\.0\.1:\K[0-9]+' "$SVC_FILE" 2>/dev/null | head -1)
-      [ -n "$DETECTED_SSH_PORT" ] && break
+      SP_TRY=$(grep -oP '127\.0\.0\.1:\K[0-9]+' "$SVC_FILE" 2>/dev/null | head -1)
+      if [ -n "$SP_TRY" ]; then
+        DETECTED_SSH_PORT="$SP_TRY"
+        break
+      fi
     fi
   done
 fi
 
+# Depuis les process actifs
 if [ -z "$DETECTED_SSH_PORT" ]; then
-  DETECTED_SSH_PORT=$(ps aux 2>/dev/null | grep -oP '127\.0\.0\.1:\K[0-9]+' | grep -v grep | head -1)
+  DETECTED_SSH_PORT=$(ps aux 2>/dev/null \
+    | grep -i "dns\|slow\|sldns" \
+    | grep -oP '127\.0\.0\.1:\K[0-9]+' \
+    | grep -v grep \
+    | head -1)
 fi
 
-# ── Vérification finale binaire ───────────────────
+# Depuis ExecStart global
+if [ -z "$DETECTED_SSH_PORT" ]; then
+  DETECTED_SSH_PORT=$(grep -rh "ExecStart" /etc/systemd/system/ 2>/dev/null \
+    | grep -i "dns\|slow\|sldns" \
+    | grep -oP '127\.0\.0\.1:\K[0-9]+' \
+    | head -1)
+fi
+
+# ── Vérification binaire obligatoire ─────────────
 if [ -z "$SLDNS" ] || [ -z "$KEY" ]; then
   echo -e "${RED}  ❌ ERREUR : SlowDNS introuvable sur ce serveur.${NC}"
   echo -e "${RED}  Assurez-vous que SlowDNS est installé avant CloneDNS.${NC}"
@@ -169,7 +222,7 @@ if [ -z "$SLDNS" ] || [ -z "$KEY" ]; then
 fi
 
 # ════════════════════════════════════════════════
-# AFFICHAGE STYLE ANCIEN — CONFIGURATION
+# CONFIGURATION
 # ════════════════════════════════════════════════
 
 echo ""
@@ -184,7 +237,8 @@ DNS_PORT=${DNS_PORT:-5301}
 # ── Port SSH ──────────────────────────────────────
 echo ""
 echo -e "${YELLOW}  Ports SSH disponibles sur ce serveur :${NC}"
-ss -tulnp | grep tcp | grep -v '127.0.0' | grep -v '\[::1\]' | awk '{print "  →", $5}' | sort -u 2>/dev/null
+ss -tulnp | grep tcp | grep -v '127.0.0' | grep -v '\[::1\]' \
+  | awk '{print "  →", $5}' | sort -u 2>/dev/null
 echo ""
 DEFAULT_SSH=${DETECTED_SSH_PORT:-2253}
 read -p "  Port SSH backend [défaut: ${DEFAULT_SSH}] : " SSH_PORT
@@ -240,7 +294,8 @@ fi
 
 echo ""
 echo -e "${YELLOW}  Nettoyage des anciens services CloneDNS...${NC}"
-EXISTING=$(systemctl list-units --full --all 2>/dev/null | grep 'server-cldns' | awk '{print $1}')
+EXISTING=$(systemctl list-units --full --all 2>/dev/null \
+  | grep 'server-cldns' | awk '{print $1}')
 if [ -n "$EXISTING" ]; then
   for SVC in $EXISTING; do
     systemctl stop "$SVC" &>/dev/null
@@ -335,4 +390,4 @@ echo "    systemctl disable server-cldns-${DNS_PORT}"
 echo ""
 echo -e "  ${YELLOW}▶ Mettre à jour le système du serveur :${NC}"
 echo "    apt update && apt upgrade -y && apt autoremove -y && apt autoclean -y && apt clean"
-echo ""
+echo "" 
