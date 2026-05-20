@@ -1,3 +1,4 @@
+cat > /usr/local/bin/install-cldns << 'EOF'
 #!/bin/bash
 clear
 
@@ -21,19 +22,72 @@ echo "  ║         Telegram : t.me/bigrhaff         ║"
 echo "  ╚══════════════════════════════════════════╝"
 echo -e "${NC}"
 
-if [ -f /etc/slowdns/sldns-server ]; then
-  SLDNS=/etc/slowdns/sldns-server
-  KEY=/etc/slowdns/server.key
-  PUB=/etc/slowdns/server.pub
-elif [ -f /usr/local/bin/sldns-server ]; then
-  SLDNS=/usr/local/bin/sldns-server
-  KEY=/usr/local/etc/server.key
-  PUB=/usr/local/etc/server.pub
+# ── Détection automatique universelle de sldns-server ──
+SLDNS=""
+KEY=""
+PUB=""
+
+SEARCH_PATHS=(
+  "/etc/slowdns/sldns-server"
+  "/usr/local/bin/sldns-server"
+  "/usr/bin/sldns-server"
+  "/opt/slowdns/sldns-server"
+  "/root/sldns-server"
+)
+
+for PATH_TRY in "${SEARCH_PATHS[@]}"; do
+  if [ -f "$PATH_TRY" ]; then
+    SLDNS="$PATH_TRY"
+    DIR=$(dirname "$PATH_TRY")
+    break
+  fi
+done
+
+# Recherche étendue si pas trouvé
+if [ -z "$SLDNS" ]; then
+  FOUND=$(find / -name "sldns-server" -type f 2>/dev/null | head -1)
+  if [ -n "$FOUND" ]; then
+    SLDNS="$FOUND"
+    DIR=$(dirname "$FOUND")
+  fi
+fi
+
+# Chercher server.key et server.pub
+if [ -n "$SLDNS" ]; then
+  if [ -f "$DIR/server.key" ]; then
+    KEY="$DIR/server.key"
+    PUB="$DIR/server.pub"
+  elif [ -f "/etc/slowdns/server.key" ]; then
+    KEY="/etc/slowdns/server.key"
+    PUB="/etc/slowdns/server.pub"
+  elif [ -f "/usr/local/etc/server.key" ]; then
+    KEY="/usr/local/etc/server.key"
+    PUB="/usr/local/etc/server.pub"
+  else
+    KEY=$(find / -name "server.key" -type f 2>/dev/null | head -1)
+    PUB=$(find / -name "server.pub" -type f 2>/dev/null | head -1)
+  fi
+fi
+
+# Afficher résultat détection
+if [ -n "$SLDNS" ] && [ -n "$KEY" ]; then
+  echo -e "${GREEN}  ✅ SlowDNS détecté automatiquement !${NC}"
+  echo -e "${CYAN}  sldns-server : ${YELLOW}${SLDNS}${NC}"
+  echo -e "${CYAN}  server.key   : ${YELLOW}${KEY}${NC}"
+  echo ""
 else
-  echo -e "${YELLOW}  Chemin SlowDNS non détecté automatiquement.${NC}"
+  echo -e "${RED}  ❌ SlowDNS introuvable automatiquement.${NC}"
+  echo -e "${YELLOW}  Saisissez les chemins manuellement :${NC}"
+  echo ""
   read -p "  Chemin sldns-server : " SLDNS
   read -p "  Chemin server.key   : " KEY
   read -p "  Chemin server.pub   : " PUB
+
+  if [ ! -f "$SLDNS" ]; then
+    echo -e "${RED}  ❌ Fichier sldns-server introuvable : ${SLDNS}${NC}"
+    echo -e "${RED}  Vérifiez que SlowDNS est bien installé sur ce serveur.${NC}"
+    exit 1
+  fi
 fi
 
 echo ""
@@ -41,36 +95,41 @@ echo -e "${BOLD}  ── Configuration CloneDNS ──${NC}"
 echo -e "${CYAN}  (Appuyez sur Entrée pour garder la valeur par défaut)${NC}"
 echo ""
 
+# ── Port DNS ──────────────────────────────────────
 read -p "  Port DNS UDP [défaut: 5301] : " DNS_PORT
 DNS_PORT=${DNS_PORT:-5301}
 
+# ── Port SSH backend ──────────────────────────────
 echo ""
 echo -e "${YELLOW}  Ports SSH disponibles sur ce serveur :${NC}"
-ss -tulnp | grep tcp | grep -v '127.0.0.1' | awk '{print "  →", $5}' 2>/dev/null
+ss -tulnp | grep tcp | grep -v '127.0.0' | grep -v '\[::1\]' | awk '{print "  →", $5}' | sort -u 2>/dev/null
 echo ""
 read -p "  Port SSH backend [défaut: 2253] : " SSH_PORT
 SSH_PORT=${SSH_PORT:-2253}
 
+# ── Nameserver ────────────────────────────────────
 echo ""
-DETECTED_NS=$(grep -oP '(?<=\s)(ns[\w.-]+)' /etc/systemd/system/server-sldns.service 2>/dev/null | head -1)
+DETECTED_NS=$(grep -oP '(?<=\s)(ns[\w.-]+\.[a-z]{2,})' /etc/systemd/system/server-sldns.service 2>/dev/null | head -1)
 if [ -n "$DETECTED_NS" ]; then
-  echo -e "${YELLOW}  Nameserver détecté sur ce serveur :${NC} ${GREEN}${DETECTED_NS}${NC}"
-else
-  echo -e "${YELLOW}  Aucun Nameserver détecté automatiquement.${NC}"
+  echo -e "${YELLOW}  Nameserver détecté :${NC} ${GREEN}${DETECTED_NS}${NC}"
+  echo ""
 fi
 
-echo ""
 echo -e "${RED}  ⚠  Le Nameserver est OBLIGATOIRE — saisissez le vôtre.${NC}"
 echo -e "${CYAN}  ex: ns-mr.rhaffservixxxxx${NC}"
 echo ""
-read -p "  Nameserver NS (obligatoire) : " NS_DOMAIN
 
+NS_DOMAIN=""
 while [ -z "$NS_DOMAIN" ]; do
-  echo -e "${RED}  ❌ Le Nameserver ne peut pas être vide !${NC}"
-  echo -e "${CYAN}  ex: ns-mr.rhaffservixxxxx${NC}"
-  read -p "  Nameserver NS (obligatoire) : " NS_DOMAIN
+  IFS= read -r -p "  Nameserver NS (obligatoire) : " NS_DOMAIN
+  NS_DOMAIN=$(echo "$NS_DOMAIN" | tr -d '[:space:]')
+  if [ -z "$NS_DOMAIN" ]; then
+    echo -e "${RED}  ❌ Le Nameserver ne peut pas être vide !${NC}"
+    echo -e "${CYAN}  ex: ns-mr.rhaffservixxxxx${NC}"
+  fi
 done
 
+# ── Résumé ────────────────────────────────────────
 echo ""
 echo -e "${CYAN}  ╔══════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}  ║           RÉSUMÉ CONFIGURATION           ║${NC}"
@@ -88,6 +147,7 @@ if [[ "$CONFIRM" != "o" && "$CONFIRM" != "O" ]]; then
   exit 0
 fi
 
+# ── Nettoyage anciens services ────────────────────
 echo ""
 echo -e "${YELLOW}  Nettoyage des anciens services CloneDNS...${NC}"
 EXISTING=$(systemctl list-units --full --all 2>/dev/null | grep 'server-cldns' | awk '{print $1}')
@@ -98,6 +158,8 @@ if [ -n "$EXISTING" ]; then
     rm -f "/etc/systemd/system/${SVC}"
     echo -e "${RED}  ✗ Supprimé : ${SVC}${NC}"
   done
+  # Supprimer aussi les fichiers résiduels
+  rm -f /etc/systemd/system/server-cldns*.service
   systemctl daemon-reload
   echo -e "${GREEN}  ✅ Anciens services supprimés.${NC}"
 else
@@ -105,6 +167,7 @@ else
 fi
 echo ""
 
+# ── Création du service ───────────────────────────
 cat > /etc/systemd/system/server-cldns-${DNS_PORT}.service << UNIT
 [Unit]
 Description=CloneDNS by Mr RHAFF DIGITAL (Port ${DNS_PORT})
@@ -124,12 +187,14 @@ RestartSec=3
 WantedBy=multi-user.target
 UNIT
 
+# ── Activation ────────────────────────────────────
 systemctl daemon-reload
 systemctl enable server-cldns-${DNS_PORT} &>/dev/null
 systemctl restart server-cldns-${DNS_PORT}
 
 sleep 2
 
+# ── Vérification ──────────────────────────────────
 STATUS=$(systemctl is-active server-cldns-${DNS_PORT})
 PUBKEY=$(cat ${PUB} 2>/dev/null || echo "Introuvable")
 
@@ -176,4 +241,9 @@ echo "    systemctl disable server-cldns-${DNS_PORT}"
 echo ""
 echo -e "  ${YELLOW}▶ Mettre à jour le système du serveur :${NC}"
 echo "    apt update && apt upgrade -y && apt autoremove -y && apt autoclean -y && apt clean"
+echo ""
+EOF
+chmod +x /usr/local/bin/install-cldns
+echo ""
+echo -e "\033[0;32m  ✅ Script prêt ! Lance avec : install-cldns\033[0m"
 echo ""
