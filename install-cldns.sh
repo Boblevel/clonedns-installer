@@ -22,8 +22,70 @@ echo "  ╚═══════════════════════
 echo -e "${NC}"
 
 # ════════════════════════════════════════════════
+# AUTO-INSTALLATION COMMANDE GLOBALE
+# ════════════════════════════════════════════════
+
+CMD_NAME="cldns"
+CMD_PATH="/usr/local/bin/${CMD_NAME}"
+SELF_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+if [ "$SELF_PATH" != "$CMD_PATH" ] && [ -f "$SELF_PATH" ]; then
+  cp "$SELF_PATH" "$CMD_PATH" 2>/dev/null && chmod +x "$CMD_PATH" 2>/dev/null
+fi
+
+# ════════════════════════════════════════════════
+# MENU PRINCIPAL
+# ════════════════════════════════════════════════
+
+show_menu() {
+  echo ""
+  echo -e "${CYAN}  ╔══════════════════════════════════════════╗${NC}"
+  echo -e "${CYAN}  ║               MENU CloneDNS                ║${NC}"
+  echo -e "${CYAN}  ╠══════════════════════════════════════════╣${NC}"
+  echo -e "${CYAN}  ║${NC}  1) Installer / Configurer un clone"
+  echo -e "${CYAN}  ║${NC}  2) Désinstaller CloneDNS"
+  echo -e "${CYAN}  ║${NC}  3) Quitter"
+  echo -e "${CYAN}  ╚══════════════════════════════════════════╝${NC}"
+  echo ""
+  read -p "  Choix [1-3] : " MENU_CHOICE
+  case "$MENU_CHOICE" in
+    1) do_install ;;
+    2) do_uninstall ;;
+    3) echo -e "${CYAN}  À bientôt.${NC}"; exit 0 ;;
+    *) echo -e "${RED}  Choix invalide.${NC}"; show_menu ;;
+  esac
+}
+
+do_uninstall() {
+  echo ""
+  echo -e "${YELLOW}  Recherche des services CloneDNS actifs...${NC}"
+  EXISTING=$(systemctl list-units --full --all 2>/dev/null \
+    | grep 'server-cldns' | awk '{print $1}')
+  if [ -z "$EXISTING" ]; then
+    echo -e "${CYAN}  Aucun service CloneDNS installé.${NC}"
+    echo ""
+    echo -e "${CYAN}  Tape ${YELLOW}${CMD_NAME}${CYAN} pour revenir au menu.${NC}"
+    echo ""
+    return
+  fi
+  for SVC in $EXISTING; do
+    systemctl stop "$SVC" &>/dev/null
+    systemctl disable "$SVC" &>/dev/null
+    rm -f "/etc/systemd/system/${SVC}"
+    echo -e "${RED}  ✗ Supprimé : ${SVC}${NC}"
+  done
+  rm -f /etc/systemd/system/server-cldns*.service
+  systemctl daemon-reload
+  echo -e "${GREEN}  ✅ CloneDNS désinstallé (tous les services supprimés).${NC}"
+  echo ""
+  echo -e "${CYAN}  Tape ${YELLOW}${CMD_NAME}${CYAN} pour revenir au menu.${NC}"
+  echo ""
+}
+
+# ════════════════════════════════════════════════
 # SCAN UNIVERSEL SILENCIEUX
 # ════════════════════════════════════════════════
+
+do_install() {
 
 SLDNS=""
 KEY=""
@@ -390,4 +452,15 @@ echo "    systemctl disable server-cldns-${DNS_PORT}"
 echo ""
 echo -e "  ${YELLOW}▶ Mettre à jour le système du serveur :${NC}"
 echo "    apt update && apt upgrade -y && apt autoremove -y && apt autoclean -y && apt clean"
-echo "" 
+echo ""
+echo -e "  ${YELLOW}▶ Revenir à ce menu :${NC}"
+echo "    ${CMD_NAME}"
+echo ""
+
+}
+
+# ════════════════════════════════════════════════
+# LANCEMENT
+# ════════════════════════════════════════════════
+
+show_menu
