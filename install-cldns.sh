@@ -27,9 +27,9 @@ echo -e "${NC}"
 
 CMD_NAME="cldns"
 CMD_PATH="/usr/local/bin/${CMD_NAME}"
-SELF_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-if [ "$SELF_PATH" != "$CMD_PATH" ] && [ -f "$SELF_PATH" ]; then
-  cp "$SELF_PATH" "$CMD_PATH" 2>/dev/null && chmod +x "$CMD_PATH" 2>/dev/null
+SCRIPT_URL="https://raw.githubusercontent.com/Boblevel/clonedns-installer/main/install-cldns.sh"
+if ! command -v "$CMD_NAME" >/dev/null 2>&1; then
+  curl -fsSL "$SCRIPT_URL" -o "${CMD_PATH}.tmp" 2>/dev/null && mv "${CMD_PATH}.tmp" "$CMD_PATH" 2>/dev/null && chmod +x "$CMD_PATH" 2>/dev/null
 fi
 
 # ════════════════════════════════════════════════
