@@ -225,27 +225,28 @@ do_install_xray() {
 EOF
 )
 
-  jq --argjson new "$NEW_INBOUNDS" '.inbounds |= (map(select((.tag | endswith("-clone")) | not)) + $new)' "$XRAY_CONF" > "${XRAY_CONF}.tmp" 2>/dev/null
+  XRAY_TMP="${XRAY_CONF%.json}.tmp.json"
+  jq --argjson new "$NEW_INBOUNDS" '.inbounds |= (map(select((.tag | endswith("-clone")) | not)) + $new)' "$XRAY_CONF" > "$XRAY_TMP" 2>/dev/null
 
-  if [ ! -s "${XRAY_CONF}.tmp" ]; then
+  if [ ! -s "$XRAY_TMP" ]; then
     echo -e "${RED}  ✗ Échec de la fusion JSON. Aucune modification appliquée.${NC}"
-    rm -f "${XRAY_CONF}.tmp"
+    rm -f "$XRAY_TMP"
     echo ""
     return
   fi
 
-  XTEST_OUTPUT=$(/usr/local/bin/xray run -test -c "${XRAY_CONF}.tmp" 2>&1)
+  XTEST_OUTPUT=$(/usr/local/bin/xray run -test -c "$XRAY_TMP" 2>&1)
   XTEST_STATUS=$?
   if [ "$XTEST_STATUS" -ne 0 ]; then
     echo -e "${RED}  ✗ Config invalide selon Xray. Aucune modification appliquée (sauvegarde intacte : ${XBACKUP}).${NC}"
     echo -e "${YELLOW}  Détail retourné par Xray :${NC}"
     echo "$XTEST_OUTPUT"
-    rm -f "${XRAY_CONF}.tmp"
+    rm -f "$XRAY_TMP"
     echo ""
     return
   fi
 
-  mv "${XRAY_CONF}.tmp" "$XRAY_CONF"
+  mv "$XRAY_TMP" "$XRAY_CONF"
   systemctl restart xray.service
   sleep 1
 
@@ -291,14 +292,15 @@ do_uninstall_xray() {
   fi
   XBACKUP="${XRAY_CONF}.bak-$(date +%Y%m%d%H%M%S)"
   cp "$XRAY_CONF" "$XBACKUP"
-  jq '.inbounds |= map(select((.tag | endswith("-clone")) | not))' "$XRAY_CONF" > "${XRAY_CONF}.tmp" 2>/dev/null
-  if [ ! -s "${XRAY_CONF}.tmp" ]; then
+  XRAY_TMP="${XRAY_CONF%.json}.tmp.json"
+  jq '.inbounds |= map(select((.tag | endswith("-clone")) | not))' "$XRAY_CONF" > "$XRAY_TMP" 2>/dev/null
+  if [ ! -s "$XRAY_TMP" ]; then
     echo -e "${RED}  ✗ Échec de la suppression. Aucune modification appliquée.${NC}"
-    rm -f "${XRAY_CONF}.tmp"
+    rm -f "$XRAY_TMP"
     echo ""
     return
   fi
-  mv "${XRAY_CONF}.tmp" "$XRAY_CONF"
+  mv "$XRAY_TMP" "$XRAY_CONF"
   systemctl restart xray.service
   sleep 1
   if systemctl is-active --quiet xray.service; then
