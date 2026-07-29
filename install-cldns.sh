@@ -41,18 +41,381 @@ show_menu() {
   echo -e "${CYAN}  ╔══════════════════════════════════════════╗${NC}"
   echo -e "${CYAN}  ║               MENU CloneDNS                ║${NC}"
   echo -e "${CYAN}  ╠══════════════════════════════════════════╣${NC}"
-  echo -e "${CYAN}  ║${NC}  1) Installer / Configurer un clone"
-  echo -e "${CYAN}  ║${NC}  2) Désinstaller CloneDNS"
-  echo -e "${CYAN}  ║${NC}  3) Quitter"
+  echo -e "${CYAN}  ║${NC}  1) Accueil (état de l'installation)"
+  echo -e "${CYAN}  ║${NC}  2) Installer / Configurer un clone SlowDNS"
+  echo -e "${CYAN}  ║${NC}  3) Désinstaller CloneDNS (SlowDNS)"
+  echo -e "${CYAN}  ║${NC}  4) Rotation automatique SlowDNS (on/off)"
+  echo -e "${CYAN}  ║${NC}  5) Installer / Configurer un clone Xray"
+  echo -e "${CYAN}  ║${NC}  6) Désinstaller le clone Xray"
+  echo -e "${CYAN}  ║${NC}  7) Installer / Configurer un clone WireGuard"
+  echo -e "${CYAN}  ║${NC}  8) Désinstaller le(s) clone(s) WireGuard"
+  echo -e "${CYAN}  ║${NC}  9) Quitter"
   echo -e "${CYAN}  ╚══════════════════════════════════════════╝${NC}"
   echo ""
-  read -p "  Choix [1-3] : " MENU_CHOICE
+  read -p "  Choix [1-9] : " MENU_CHOICE
   case "$MENU_CHOICE" in
-    1) do_install ;;
-    2) do_uninstall ;;
-    3) echo -e "${CYAN}  À bientôt.${NC}"; exit 0 ;;
+    1) do_status ;;
+    2) do_install ;;
+    3) do_uninstall ;;
+    4) do_toggle_rotation ;;
+    5) do_install_xray ;;
+    6) do_uninstall_xray ;;
+    7) do_install_wireguard ;;
+    8) do_uninstall_wireguard ;;
+    9) echo -e "${CYAN}  À bientôt.${NC}"; exit 0 ;;
     *) echo -e "${RED}  Choix invalide.${NC}"; show_menu ;;
   esac
+}
+
+do_status() {
+  echo ""
+  echo -e "${CYAN}  ── Accueil : état de l'installation ──${NC}"
+  echo ""
+  EXISTING=$(systemctl list-units --full --all 2>/dev/null \
+    | grep 'server-cldns' | awk '{print $1}')
+  if [ -z "$EXISTING" ]; then
+    echo -e "${YELLOW}  Aucune installation CloneDNS détectée sur ce serveur.${NC}"
+    echo ""
+    echo -e "${CYAN}  Tape ${YELLOW}${CMD_NAME}${CYAN} pour revenir au menu.${NC}"
+    echo ""
+    return
+  fi
+  for SVC in $EXISTING; do
+    UNIT_FILE="/etc/systemd/system/${SVC}"
+    SVC_STATUS=$(systemctl is-active "$SVC" 2>/dev/null)
+    EXEC_LINE=$(grep '^ExecStart=' "$UNIT_FILE" 2>/dev/null)
+    SVC_PORT=$(echo "$SVC" | grep -oP '(?<=server-cldns-)[0-9]+')
+    SVC_NS=$(echo "$EXEC_LINE" | grep -oP 'ns[\w.-]+\.[a-z]{2,}' | head -1)
+    SVC_SSH=$(echo "$EXEC_LINE" | grep -oP '(?<=127\.0\.0\.1:)[0-9]+')
+    if [ "$SVC_STATUS" = "active" ]; then
+      SVC_COLOR="${GREEN}"; SVC_LABEL="ACTIF"
+    else
+      SVC_COLOR="${RED}"; SVC_LABEL="INACTIF"
+    fi
+    echo -e "${CYAN}  ╔══════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}  ║${NC}  Service      : ${SVC}"
+    echo -e "${CYAN}  ║${NC}  Statut       : ${SVC_COLOR}${SVC_LABEL}${NC}"
+    echo -e "${CYAN}  ║${NC}  Port DNS     : ${SVC_PORT}"
+    echo -e "${CYAN}  ║${NC}  Nameserver   : ${SVC_NS}"
+    echo -e "${CYAN}  ║${NC}  Port SSH     : ${SVC_SSH}"
+    echo -e "${CYAN}  ╚══════════════════════════════════════════╝${NC}"
+    echo ""
+  done
+  echo -e "${CYAN}  ── Xray ──${NC}"
+  XRAY_CONF="/usr/local/etc/xray/config.json"
+  if systemctl is-active --quiet xray.service 2>/dev/null; then
+    echo -e "  Service xray.service : ${GREEN}ACTIF${NC}"
+    if command -v jq >/dev/null 2>&1 && [ -f "$XRAY_CONF" ]; then
+      XCLONE_COUNT=$(jq '[.inbounds[] | select(.tag | endswith("-clone"))] | length' "$XRAY_CONF" 2>/dev/null)
+      if [ -n "$XCLONE_COUNT" ] && [ "$XCLONE_COUNT" -gt 0 ] 2>/dev/null; then
+        echo -e "  Clone Xray : ${GREEN}installé${NC} (${XCLONE_COUNT} inbounds)"
+      else
+        echo -e "  Clone Xray : ${YELLOW}non installé${NC}"
+      fi
+    fi
+  else
+    echo -e "  Service xray.service : ${RED}introuvable ou inactif${NC}"
+  fi
+  echo ""
+  echo -e "${CYAN}  ── WireGuard ──${NC}"
+  WG_CLONE_COUNT=0
+  for WGCONF in /etc/wireguard/wg*.conf; do
+    [ -f "$WGCONF" ] || continue
+    WGIFACE=$(basename "$WGCONF" .conf)
+    [ "$WGIFACE" = "wg0" ] && continue
+    WG_CLONE_COUNT=$((WG_CLONE_COUNT+1))
+  done
+  if [ -f /etc/wireguard/wg0.conf ]; then
+    if [ "$WG_CLONE_COUNT" -gt 0 ]; then
+      echo -e "  wg0 (original) présent, ${GREEN}${WG_CLONE_COUNT} clone(s)${NC} installé(s)"
+    else
+      echo -e "  wg0 (original) présent, ${YELLOW}aucun clone${NC}"
+    fi
+  else
+    echo -e "  ${RED}WireGuard non installé${NC}"
+  fi
+  echo ""
+  echo -e "${CYAN}  Tape ${YELLOW}${CMD_NAME}${CYAN} pour revenir au menu.${NC}"
+  echo ""
+}
+
+do_install_xray() {
+  echo ""
+  echo -e "${CYAN}  ── Configuration clone Xray ──${NC}"
+  echo -e "${CYAN}  (Appuyez sur Entrée pour garder la valeur par défaut)${NC}"
+  echo ""
+
+  XRAY_CONF="/usr/local/etc/xray/config.json"
+  if [ ! -f "$XRAY_CONF" ]; then
+    echo -e "${RED}  ✗ Config Xray introuvable (${XRAY_CONF}). Installation annulée.${NC}"
+    echo ""
+    return
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo -e "${YELLOW}  jq requis, installation...${NC}"
+    apt install -y jq >/dev/null 2>&1
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    echo -e "${RED}  ✗ Impossible d'installer jq. Installation annulée.${NC}"
+    echo ""
+    return
+  fi
+
+  read -p "  Port de départ pour le clone [défaut: 9080] : " XBASE
+  XBASE=${XBASE:-9080}
+  XVMESS_PORT=$XBASE
+  XVLESS_PORT=$((XBASE+1))
+  XTROJAN_PORT=$((XBASE+2))
+  XSS_PORT=$((XBASE+3))
+
+  XVMESS_UUID=$(/usr/local/bin/xray uuid)
+  XVLESS_UUID=$(/usr/local/bin/xray uuid)
+  XSS_PASS=$(openssl rand -base64 32)
+
+  echo ""
+  echo -e "${CYAN}  ╔══════════════════════════════════════════╗${NC}"
+  echo -e "${CYAN}  ║           RÉSUMÉ CLONE XRAY              ║${NC}"
+  echo -e "${CYAN}  ╠══════════════════════════════════════════╣${NC}"
+  echo -e "${CYAN}  ║${NC}  VMess   : port ${XVMESS_PORT}"
+  echo -e "${CYAN}  ║${NC}  VLess   : port ${XVLESS_PORT}"
+  echo -e "${CYAN}  ║${NC}  Trojan  : port ${XTROJAN_PORT}"
+  echo -e "${CYAN}  ║${NC}  SS      : port ${XSS_PORT}"
+  echo -e "${CYAN}  ╚══════════════════════════════════════════╝${NC}"
+  echo ""
+  read -p "  Confirmer l'installation ? (o/n) [défaut: o] : " XCONFIRM
+  XCONFIRM=${XCONFIRM:-o}
+  if [ "$XCONFIRM" != "o" ] && [ "$XCONFIRM" != "O" ]; then
+    echo -e "${YELLOW}  Installation annulée.${NC}"
+    echo ""
+    return
+  fi
+
+  XBACKUP="${XRAY_CONF}.bak-$(date +%Y%m%d%H%M%S)"
+  cp "$XRAY_CONF" "$XBACKUP"
+
+  NEW_INBOUNDS=$(cat <<EOF
+[
+  {
+    "tag": "vmess-in-clone",
+    "port": ${XVMESS_PORT},
+    "protocol": "vmess",
+    "settings": { "clients": [ { "id": "${XVMESS_UUID}", "alterId": 0, "email": "clone" } ] },
+    "streamSettings": { "network": "ws", "wsSettings": { "path": "/vmess" } }
+  },
+  {
+    "tag": "vless-in-clone",
+    "port": ${XVLESS_PORT},
+    "protocol": "vless",
+    "settings": { "clients": [ { "id": "${XVLESS_UUID}", "email": "clone" } ], "decryption": "none" },
+    "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" } }
+  },
+  {
+    "tag": "trojan-in-clone",
+    "port": ${XTROJAN_PORT},
+    "protocol": "trojan",
+    "settings": { "clients": [ { "password": "${XSS_PASS}", "email": "clone" } ] },
+    "streamSettings": { "network": "ws", "wsSettings": { "path": "/trojan" } }
+  },
+  {
+    "tag": "ss-in-clone",
+    "port": ${XSS_PORT},
+    "protocol": "shadowsocks",
+    "settings": { "method": "2022-blake3-aes-256-gcm", "password": "${XSS_PASS}", "clients": [], "network": "tcp,udp" }
+  }
+]
+EOF
+)
+
+  jq --argjson new "$NEW_INBOUNDS" '.inbounds += $new' "$XRAY_CONF" > "${XRAY_CONF}.tmp" 2>/dev/null
+
+  if [ ! -s "${XRAY_CONF}.tmp" ]; then
+    echo -e "${RED}  ✗ Échec de la fusion JSON. Aucune modification appliquée.${NC}"
+    rm -f "${XRAY_CONF}.tmp"
+    echo ""
+    return
+  fi
+
+  if ! /usr/local/bin/xray run -test -c "${XRAY_CONF}.tmp" >/dev/null 2>&1; then
+    echo -e "${RED}  ✗ Config invalide selon Xray. Aucune modification appliquée (sauvegarde intacte : ${XBACKUP}).${NC}"
+    rm -f "${XRAY_CONF}.tmp"
+    echo ""
+    return
+  fi
+
+  mv "${XRAY_CONF}.tmp" "$XRAY_CONF"
+  systemctl restart xray.service
+  sleep 1
+
+  if systemctl is-active --quiet xray.service; then
+    echo ""
+    echo -e "${GREEN}  ✅ Clone Xray activé.${NC}"
+    echo -e "${CYAN}  Sauvegarde de l'ancienne config : ${XBACKUP}${NC}"
+    echo ""
+    echo -e "${CYAN}  ── Identifiants clone ──${NC}"
+    echo -e "  VMess  UUID : ${XVMESS_UUID}  (port ${XVMESS_PORT}, ws /vmess)"
+    echo -e "  VLess  UUID : ${XVLESS_UUID}  (port ${XVLESS_PORT}, ws /vless)"
+    echo -e "  Trojan mot de passe : ${XSS_PASS}  (port ${XTROJAN_PORT}, ws /trojan)"
+    echo -e "  Shadowsocks mot de passe : ${XSS_PASS}  (port ${XSS_PORT}, méthode 2022-blake3-aes-256-gcm)"
+  else
+    echo -e "${RED}  ✗ xray.service ne démarre pas avec la nouvelle config. Restauration...${NC}"
+    cp "$XBACKUP" "$XRAY_CONF"
+    systemctl restart xray.service
+    echo -e "${YELLOW}  Config restaurée, aucun changement conservé.${NC}"
+  fi
+  echo ""
+  echo -e "${CYAN}  Tape ${YELLOW}${CMD_NAME}${CYAN} pour revenir au menu.${NC}"
+  echo ""
+}
+
+do_uninstall_xray() {
+  echo ""
+  XRAY_CONF="/usr/local/etc/xray/config.json"
+  if [ ! -f "$XRAY_CONF" ]; then
+    echo -e "${CYAN}  Config Xray introuvable.${NC}"
+    echo ""
+    return
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    apt install -y jq >/dev/null 2>&1
+  fi
+  HAS_CLONE=$(jq '[.inbounds[] | select(.tag | endswith("-clone"))] | length' "$XRAY_CONF" 2>/dev/null)
+  if [ -z "$HAS_CLONE" ] || [ "$HAS_CLONE" = "0" ]; then
+    echo -e "${CYAN}  Aucun clone Xray installé.${NC}"
+    echo ""
+    echo -e "${CYAN}  Tape ${YELLOW}${CMD_NAME}${CYAN} pour revenir au menu.${NC}"
+    echo ""
+    return
+  fi
+  XBACKUP="${XRAY_CONF}.bak-$(date +%Y%m%d%H%M%S)"
+  cp "$XRAY_CONF" "$XBACKUP"
+  jq '.inbounds |= map(select((.tag | endswith("-clone")) | not))' "$XRAY_CONF" > "${XRAY_CONF}.tmp" 2>/dev/null
+  if [ ! -s "${XRAY_CONF}.tmp" ]; then
+    echo -e "${RED}  ✗ Échec de la suppression. Aucune modification appliquée.${NC}"
+    rm -f "${XRAY_CONF}.tmp"
+    echo ""
+    return
+  fi
+  mv "${XRAY_CONF}.tmp" "$XRAY_CONF"
+  systemctl restart xray.service
+  sleep 1
+  if systemctl is-active --quiet xray.service; then
+    echo -e "${GREEN}  ✅ Clone Xray désinstallé.${NC}"
+  else
+    echo -e "${RED}  ✗ xray.service ne redémarre pas. Restauration de la sauvegarde...${NC}"
+    cp "$XBACKUP" "$XRAY_CONF"
+    systemctl restart xray.service
+  fi
+  echo ""
+  echo -e "${CYAN}  Tape ${YELLOW}${CMD_NAME}${CYAN} pour revenir au menu.${NC}"
+  echo ""
+}
+
+do_install_wireguard() {
+  echo ""
+  echo -e "${CYAN}  ── Configuration clone WireGuard ──${NC}"
+  echo -e "${CYAN}  (Appuyez sur Entrée pour garder la valeur par défaut)${NC}"
+  echo ""
+
+  WG_BASE_CONF="/etc/wireguard/wg0.conf"
+  if [ ! -f "$WG_BASE_CONF" ]; then
+    echo -e "${RED}  ✗ Config WireGuard de base introuvable (${WG_BASE_CONF}). Installation annulée.${NC}"
+    echo ""
+    return
+  fi
+  if ! command -v wg >/dev/null 2>&1; then
+    echo -e "${RED}  ✗ wg introuvable. Installation annulée.${NC}"
+    echo ""
+    return
+  fi
+
+  WG_OUT_IF=$(grep -oP '(?<=-o )[a-zA-Z0-9]+' "$WG_BASE_CONF" | head -1)
+  WG_OUT_IF=${WG_OUT_IF:-eth0}
+
+  WG_NUM=1
+  while [ -f "/etc/wireguard/wg${WG_NUM}.conf" ]; do
+    WG_NUM=$((WG_NUM+1))
+  done
+  WG_IFACE="wg${WG_NUM}"
+
+  read -p "  Port WireGuard pour le clone [défaut: 51821] : " WG_PORT
+  WG_PORT=${WG_PORT:-51821}
+
+  read -p "  Sous-réseau du clone [défaut: 10.66.$((66+WG_NUM)).1/24] : " WG_SUBNET
+  WG_SUBNET=${WG_SUBNET:-10.66.$((66+WG_NUM)).1/24}
+
+  echo ""
+  echo -e "${CYAN}  ╔══════════════════════════════════════════╗${NC}"
+  echo -e "${CYAN}  ║          RÉSUMÉ CLONE WIREGUARD          ║${NC}"
+  echo -e "${CYAN}  ╠══════════════════════════════════════════╣${NC}"
+  echo -e "${CYAN}  ║${NC}  Interface   : ${WG_IFACE}"
+  echo -e "${CYAN}  ║${NC}  Port        : ${WG_PORT}"
+  echo -e "${CYAN}  ║${NC}  Sous-réseau : ${WG_SUBNET}"
+  echo -e "${CYAN}  ║${NC}  Sortie      : ${WG_OUT_IF}"
+  echo -e "${CYAN}  ╚══════════════════════════════════════════╝${NC}"
+  echo ""
+  read -p "  Confirmer l'installation ? (o/n) [défaut: o] : " WG_CONFIRM
+  WG_CONFIRM=${WG_CONFIRM:-o}
+  if [ "$WG_CONFIRM" != "o" ] && [ "$WG_CONFIRM" != "O" ]; then
+    echo -e "${YELLOW}  Installation annulée.${NC}"
+    echo ""
+    return
+  fi
+
+  WG_PRIV=$(wg genkey)
+  WG_PUB=$(echo "$WG_PRIV" | wg pubkey)
+
+  cat > "/etc/wireguard/${WG_IFACE}.conf" << UNIT
+[Interface]
+Address = ${WG_SUBNET}
+ListenPort = ${WG_PORT}
+PrivateKey = ${WG_PRIV}
+PostUp = iptables -A FORWARD -i ${WG_IFACE} -j ACCEPT; iptables -t nat -A POSTROUTING -o ${WG_OUT_IF} -j MASQUERADE
+PostDown = iptables -D FORWARD -i ${WG_IFACE} -j ACCEPT; iptables -t nat -D POSTROUTING -o ${WG_OUT_IF} -j MASQUERADE
+UNIT
+  chmod 600 "/etc/wireguard/${WG_IFACE}.conf"
+
+  systemctl enable --now "wg-quick@${WG_IFACE}" >/dev/null 2>&1
+  sleep 1
+
+  if systemctl is-active --quiet "wg-quick@${WG_IFACE}"; then
+    echo ""
+    echo -e "${GREEN}  ✅ Clone WireGuard activé : ${WG_IFACE}${NC}"
+    echo ""
+    echo -e "${CYAN}  ── Infos serveur (à mettre dans la config client) ──${NC}"
+    echo -e "  Clé publique serveur : ${WG_PUB}"
+    echo -e "  Port                 : ${WG_PORT}"
+    echo -e "  Sous-réseau          : ${WG_SUBNET}"
+  else
+    echo -e "${RED}  ✗ ${WG_IFACE} ne démarre pas. Suppression du fichier de config.${NC}"
+    rm -f "/etc/wireguard/${WG_IFACE}.conf"
+  fi
+  echo ""
+  echo -e "${CYAN}  Tape ${YELLOW}${CMD_NAME}${CYAN} pour revenir au menu.${NC}"
+  echo ""
+}
+
+do_uninstall_wireguard() {
+  echo ""
+  echo -e "${YELLOW}  Recherche des clones WireGuard...${NC}"
+  WG_FOUND=0
+  for WGCONF in /etc/wireguard/wg*.conf; do
+    [ -f "$WGCONF" ] || continue
+    WGIFACE=$(basename "$WGCONF" .conf)
+    [ "$WGIFACE" = "wg0" ] && continue
+    WG_FOUND=1
+    systemctl disable --now "wg-quick@${WGIFACE}" >/dev/null 2>&1
+    rm -f "$WGCONF"
+    echo -e "${RED}  ✗ Supprimé : ${WGIFACE}${NC}"
+  done
+  if [ "$WG_FOUND" = "0" ]; then
+    echo -e "${CYAN}  Aucun clone WireGuard installé (wg0 n'est jamais touché).${NC}"
+  else
+    echo -e "${GREEN}  ✅ Clones WireGuard désinstallés.${NC}"
+  fi
+  echo ""
+  echo -e "${CYAN}  Tape ${YELLOW}${CMD_NAME}${CYAN} pour revenir au menu.${NC}"
+  echo ""
 }
 
 do_uninstall() {
@@ -76,6 +439,136 @@ do_uninstall() {
   rm -f /etc/systemd/system/server-cldns*.service
   systemctl daemon-reload
   echo -e "${GREEN}  ✅ CloneDNS désinstallé (tous les services supprimés).${NC}"
+  echo ""
+  echo -e "${CYAN}  Tape ${YELLOW}${CMD_NAME}${CYAN} pour revenir au menu.${NC}"
+  echo ""
+}
+
+rotate_cldns() {
+  LOG="/var/log/cldns-rotate.log"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rotation démarrée" >> "$LOG"
+
+  LAST_SVC=$(systemctl list-units --full --all 2>/dev/null \
+    | grep 'server-cldns' | awk '{print $1}' | sort | tail -1)
+  if [ -z "$LAST_SVC" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Aucun clone existant, rotation annulée." >> "$LOG"
+    return
+  fi
+
+  LAST_EXEC=$(grep '^ExecStart=' "/etc/systemd/system/${LAST_SVC}" 2>/dev/null)
+  R_NS=$(echo "$LAST_EXEC" | grep -oP 'ns[\w.-]+\.[a-z]{2,}' | head -1)
+  R_SSH=$(echo "$LAST_EXEC" | grep -oP '(?<=127\.0\.0\.1:)[0-9]+')
+
+  R_SLDNS=""
+  for BIN in sldns-server dns-server slowdns sldns; do
+    for DIR in /usr/local/bin /usr/bin /root /opt /etc/slowdns /usr/local/sbin; do
+      [ -f "${DIR}/${BIN}" ] && R_SLDNS="${DIR}/${BIN}" && break 2
+    done
+  done
+  [ -z "$R_SLDNS" ] && R_SLDNS=$(find / -maxdepth 4 -type f \( -iname "sldns-server" -o -iname "dns-server" -o -iname "slowdns" -o -iname "sldns" \) 2>/dev/null | head -1)
+
+  R_KEY=""
+  for DIR in /etc/slowdns /root /usr/local/etc/slowdns "$(dirname "$R_SLDNS" 2>/dev/null)"; do
+    [ -f "${DIR}/server.key" ] && R_KEY="${DIR}/server.key" && break
+  done
+  [ -z "$R_KEY" ] && R_KEY=$(find / -maxdepth 5 -iname "server.key" 2>/dev/null | grep -i slowdns | head -1)
+
+  if [ -z "$R_SLDNS" ] || [ -z "$R_KEY" ] || [ -z "$R_NS" ] || [ -z "$R_SSH" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Infos manquantes (binaire/clé/ns/ssh), rotation annulée." >> "$LOG"
+    return
+  fi
+
+  R_PORT=""
+  for TRY in $(shuf -i 5300-5399 -n 20); do
+    if ! ss -tulnp 2>/dev/null | grep -q ":${TRY} "; then
+      R_PORT=$TRY
+      break
+    fi
+  done
+  if [ -z "$R_PORT" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Aucun port libre trouvé, rotation annulée." >> "$LOG"
+    return
+  fi
+
+  cat > /etc/systemd/system/server-cldns-${R_PORT}.service << UNIT
+[Unit]
+Description=CloneDNS by Mr RHAFF DIGITAL (Port ${R_PORT})
+After=network.target nss-lookup.target
+
+[Service]
+Type=simple
+User=root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ExecStart=${R_SLDNS} -udp :${R_PORT} -privkey-file ${R_KEY} ${R_NS} 127.0.0.1:${R_SSH}
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  systemctl daemon-reload
+  systemctl enable server-cldns-${R_PORT} &>/dev/null
+  systemctl restart server-cldns-${R_PORT}
+
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Nouveau clone créé : port ${R_PORT} (NS: ${R_NS}, SSH: ${R_SSH})" >> "$LOG"
+
+  GRACE_DAYS=5
+  NOW=$(date +%s)
+  for SVC in $(systemctl list-units --full --all 2>/dev/null | grep 'server-cldns' | awk '{print $1}'); do
+    [ "$SVC" = "server-cldns-${R_PORT}.service" ] && continue
+    UNIT_FILE="/etc/systemd/system/${SVC}"
+    [ -f "$UNIT_FILE" ] || continue
+    MTIME=$(stat -c %Y "$UNIT_FILE" 2>/dev/null)
+    AGE_DAYS=$(( (NOW - MTIME) / 86400 ))
+    if [ "$AGE_DAYS" -ge "$GRACE_DAYS" ]; then
+      systemctl stop "$SVC" >/dev/null 2>&1
+      systemctl disable "$SVC" >/dev/null 2>&1
+      rm -f "$UNIT_FILE"
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Ancien clone supprimé (>${GRACE_DAYS}j) : ${SVC}" >> "$LOG"
+    fi
+  done
+  systemctl daemon-reload
+}
+
+do_toggle_rotation() {
+  echo ""
+  TIMER_FILE="/etc/systemd/system/cldns-rotate.timer"
+  SERVICE_FILE="/etc/systemd/system/cldns-rotate.service"
+  if systemctl is-enabled cldns-rotate.timer >/dev/null 2>&1; then
+    systemctl disable --now cldns-rotate.timer >/dev/null 2>&1
+    rm -f "$TIMER_FILE" "$SERVICE_FILE"
+    systemctl daemon-reload
+    echo -e "${YELLOW}  Rotation automatique désactivée.${NC}"
+  else
+    cat > "$SERVICE_FILE" << UNIT
+[Unit]
+Description=Rotation automatique CloneDNS
+
+[Service]
+Type=oneshot
+ExecStart=${CMD_PATH} --rotate
+UNIT
+    cat > "$TIMER_FILE" << UNIT
+[Unit]
+Description=Timer rotation CloneDNS (tous les 15 jours)
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=15d
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+    systemctl daemon-reload
+    systemctl enable --now cldns-rotate.timer >/dev/null 2>&1
+    echo -e "${GREEN}  ✅ Rotation automatique activée : nouveau clone tous les 15 jours.${NC}"
+    echo -e "${CYAN}  Les anciens clones sont retirés 5 jours après la création d'un nouveau (période de transition pour tes clients).${NC}"
+    echo -e "${CYAN}  Log : /var/log/cldns-rotate.log${NC}"
+  fi
   echo ""
   echo -e "${CYAN}  Tape ${YELLOW}${CMD_NAME}${CYAN} pour revenir au menu.${NC}"
   echo ""
@@ -463,4 +956,8 @@ echo ""
 # LANCEMENT
 # ════════════════════════════════════════════════
 
-show_menu
+if [ "$1" = "--rotate" ]; then
+  rotate_cldns
+else
+  show_menu
+fi
