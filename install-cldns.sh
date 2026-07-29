@@ -28,9 +28,7 @@ echo -e "${NC}"
 CMD_NAME="cldns"
 CMD_PATH="/usr/local/bin/${CMD_NAME}"
 SCRIPT_URL="https://raw.githubusercontent.com/Boblevel/clonedns-installer/main/install-cldns.sh"
-if ! command -v "$CMD_NAME" >/dev/null 2>&1; then
-  curl -fsSL "$SCRIPT_URL" -o "${CMD_PATH}.tmp" 2>/dev/null && mv "${CMD_PATH}.tmp" "$CMD_PATH" 2>/dev/null && chmod +x "$CMD_PATH" 2>/dev/null
-fi
+curl -fsSL "$SCRIPT_URL" -o "${CMD_PATH}.tmp" 2>/dev/null && mv "${CMD_PATH}.tmp" "$CMD_PATH" 2>/dev/null && chmod +x "$CMD_PATH" 2>/dev/null
 
 # ════════════════════════════════════════════════
 # MENU PRINCIPAL
@@ -227,7 +225,7 @@ do_install_xray() {
 EOF
 )
 
-  jq --argjson new "$NEW_INBOUNDS" '.inbounds += $new' "$XRAY_CONF" > "${XRAY_CONF}.tmp" 2>/dev/null
+  jq --argjson new "$NEW_INBOUNDS" '.inbounds |= (map(select((.tag | endswith("-clone")) | not)) + $new)' "$XRAY_CONF" > "${XRAY_CONF}.tmp" 2>/dev/null
 
   if [ ! -s "${XRAY_CONF}.tmp" ]; then
     echo -e "${RED}  ✗ Échec de la fusion JSON. Aucune modification appliquée.${NC}"
