@@ -47,7 +47,7 @@ show_menu() {
   echo -e "${CYAN}  ║${NC}  1) Accueil (état de l'installation)"
   echo -e "${CYAN}  ║${NC}  2) Installer / Configurer un clone SlowDNS"
   echo -e "${CYAN}  ║${NC}  3) Désinstaller CloneDNS (SlowDNS)"
-  echo -e "${CYAN}  ║${NC}  4) Rotation automatique SlowDNS (on/off)"
+  echo -e "${CYAN}  ║${NC}  4) Rotation automatique tous protocoles (on/off)"
   echo -e "${CYAN}  ║${NC}  5) Installer / Configurer un clone Xray"
   echo -e "${CYAN}  ║${NC}  6) Désinstaller le clone Xray"
   echo -e "${CYAN}  ║${NC}  7) Installer / Configurer un clone WireGuard"
@@ -540,6 +540,100 @@ UNIT
     fi
   done
   systemctl daemon-reload
+
+  XRAY_CONF="/usr/local/etc/xray/config.json"
+  if systemctl is-active --quiet xray.service 2>/dev/null && [ -f "$XRAY_CONF" ] && command -v jq >/dev/null 2>&1; then
+    HAS_XCLONE=$(jq '[.inbounds[] | select(.tag | endswith("-clone"))] | length' "$XRAY_CONF" 2>/dev/null)
+    if [ -n "$HAS_XCLONE" ] && [ "$HAS_XCLONE" -gt 0 ] 2>/dev/null; then
+      RX_VMESS=""
+      for TRY in $(shuf -i 9000-9999 -n 30); do
+        if ! ss -tulnp 2>/dev/null | grep -q ":${TRY} "; then RX_VMESS=$TRY; break; fi
+      done
+      if [ -z "$RX_VMESS" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Xray: aucun port libre, rotation annulée." >> "$LOG"
+      else
+        RX_VLESS=$((RX_VMESS+1))
+        RX_TROJAN=$((RX_VMESS+2))
+        RX_SS=$((RX_VMESS+3))
+        RX_VMESS_UUID=$(/usr/local/bin/xray uuid)
+        RX_VLESS_UUID=$(/usr/local/bin/xray uuid)
+        RX_SS_PASS=$(openssl rand -base64 32)
+        RX_BACKUP="${XRAY_CONF}.bak-$(date +%Y%m%d%H%M%S)"
+        cp "$XRAY_CONF" "$RX_BACKUP"
+        RX_NEW=$(cat <<EOF
+[
+  { "tag": "vmess-in-clone", "port": ${RX_VMESS}, "protocol": "vmess", "settings": { "clients": [ { "id": "${RX_VMESS_UUID}", "alterId": 0, "email": "clone" } ] }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/vmess" } } },
+  { "tag": "vless-in-clone", "port": ${RX_VLESS}, "protocol": "vless", "settings": { "clients": [ { "id": "${RX_VLESS_UUID}", "email": "clone" } ], "decryption": "none" }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" } } },
+  { "tag": "trojan-in-clone", "port": ${RX_TROJAN}, "protocol": "trojan", "settings": { "clients": [ { "password": "${RX_SS_PASS}", "email": "clone" } ] }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/trojan" } } },
+  { "tag": "ss-in-clone", "port": ${RX_SS}, "protocol": "shadowsocks", "settings": { "method": "2022-blake3-aes-256-gcm", "password": "${RX_SS_PASS}", "clients": [], "network": "tcp,udp" } }
+]
+EOF
+)
+        RX_TMP="${XRAY_CONF%.json}.tmp.json"
+        jq --argjson new "$RX_NEW" '.inbounds |= (map(select((.tag | endswith("-clone")) | not)) + $new)' "$XRAY_CONF" > "$RX_TMP" 2>/dev/null
+        if [ -s "$RX_TMP" ] && /usr/local/bin/xray run -test -c "$RX_TMP" >/dev/null 2>&1; then
+          mv "$RX_TMP" "$XRAY_CONF"
+          systemctl restart xray.service
+          echo "[$(date '+%Y-%m-%d %H:%M:%S')] Xray: clone régénéré (ports ${RX_VMESS}-${RX_SS})" >> "$LOG"
+        else
+          rm -f "$RX_TMP"
+          echo "[$(date '+%Y-%m-%d %H:%M:%S')] Xray: échec de la rotation, config inchangée." >> "$LOG"
+        fi
+      fi
+    fi
+  fi
+
+  if [ -f /etc/wireguard/wg0.conf ] && command -v wg >/dev/null 2>&1; then
+    HAS_WGCLONE=0
+    for WGCONF in /etc/wireguard/wg*.conf; do
+      [ -f "$WGCONF" ] || continue
+      [ "$(basename "$WGCONF" .conf)" = "wg0" ] && continue
+      HAS_WGCLONE=1
+    done
+    if [ "$HAS_WGCLONE" = "1" ]; then
+      RW_OUT_IF=$(grep -oP '(?<=-o )[a-zA-Z0-9]+' /etc/wireguard/wg0.conf | head -1)
+      RW_OUT_IF=${RW_OUT_IF:-eth0}
+      RW_NUM=1
+      while [ -f "/etc/wireguard/wg${RW_NUM}.conf" ]; do RW_NUM=$((RW_NUM+1)); done
+      RW_IFACE="wg${RW_NUM}"
+      RW_PORT=""
+      for TRY in $(shuf -i 51900-51999 -n 30); do
+        if ! ss -tulnp 2>/dev/null | grep -q ":${TRY} "; then RW_PORT=$TRY; break; fi
+      done
+      if [ -n "$RW_PORT" ]; then
+        RW_PRIV=$(wg genkey)
+        cat > "/etc/wireguard/${RW_IFACE}.conf" << UNIT
+[Interface]
+Address = 10.66.$((66+RW_NUM)).1/24
+ListenPort = ${RW_PORT}
+PrivateKey = ${RW_PRIV}
+PostUp = iptables -A FORWARD -i ${RW_IFACE} -j ACCEPT; iptables -t nat -A POSTROUTING -o ${RW_OUT_IF} -j MASQUERADE
+PostDown = iptables -D FORWARD -i ${RW_IFACE} -j ACCEPT; iptables -t nat -D POSTROUTING -o ${RW_OUT_IF} -j MASQUERADE
+UNIT
+        chmod 600 "/etc/wireguard/${RW_IFACE}.conf"
+        systemctl enable --now "wg-quick@${RW_IFACE}" >/dev/null 2>&1
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] WireGuard: nouveau clone ${RW_IFACE} (port ${RW_PORT})" >> "$LOG"
+
+        RW_GRACE=5
+        RW_NOW=$(date +%s)
+        for WGCONF in /etc/wireguard/wg*.conf; do
+          [ -f "$WGCONF" ] || continue
+          WGIFACE=$(basename "$WGCONF" .conf)
+          [ "$WGIFACE" = "wg0" ] && continue
+          [ "$WGIFACE" = "$RW_IFACE" ] && continue
+          WGMTIME=$(stat -c %Y "$WGCONF" 2>/dev/null)
+          WGAGE=$(( (RW_NOW - WGMTIME) / 86400 ))
+          if [ "$WGAGE" -ge "$RW_GRACE" ]; then
+            systemctl disable --now "wg-quick@${WGIFACE}" >/dev/null 2>&1
+            rm -f "$WGCONF"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] WireGuard: ancien clone supprimé (>${RW_GRACE}j) : ${WGIFACE}" >> "$LOG"
+          fi
+        done
+      fi
+    fi
+  fi
+
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rotation terminée" >> "$LOG"
 }
 
 do_toggle_rotation() {
@@ -574,8 +668,8 @@ WantedBy=timers.target
 UNIT
     systemctl daemon-reload
     systemctl enable --now cldns-rotate.timer >/dev/null 2>&1
-    echo -e "${GREEN}  ✅ Rotation automatique activée : nouveau clone tous les 15 jours.${NC}"
-    echo -e "${CYAN}  Les anciens clones sont retirés 5 jours après la création d'un nouveau (période de transition pour tes clients).${NC}"
+    echo -e "${GREEN}  ✅ Rotation automatique activée : SlowDNS, Xray et WireGuard régénérés tous les 15 jours (uniquement ceux déjà installés).${NC}"
+    echo -e "${CYAN}  SlowDNS et WireGuard gardent l'ancien clone 5 jours en transition. Xray est remplacé immédiatement (pas de période de transition sur ce protocole).${NC}"
     echo -e "${CYAN}  Log : /var/log/cldns-rotate.log${NC}"
   fi
   echo ""
