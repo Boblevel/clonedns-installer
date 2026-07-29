@@ -234,8 +234,12 @@ EOF
     return
   fi
 
-  if ! /usr/local/bin/xray run -test -c "${XRAY_CONF}.tmp" >/dev/null 2>&1; then
+  XTEST_OUTPUT=$(/usr/local/bin/xray run -test -c "${XRAY_CONF}.tmp" 2>&1)
+  XTEST_STATUS=$?
+  if [ "$XTEST_STATUS" -ne 0 ]; then
     echo -e "${RED}  ✗ Config invalide selon Xray. Aucune modification appliquée (sauvegarde intacte : ${XBACKUP}).${NC}"
+    echo -e "${YELLOW}  Détail retourné par Xray :${NC}"
+    echo "$XTEST_OUTPUT"
     rm -f "${XRAY_CONF}.tmp"
     echo ""
     return
